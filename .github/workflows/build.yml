@@ -1,0 +1,232 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+jobs:
+  build-and-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore BookingPlatform.sln
+
+      - name: Build
+        run: dotnet build BookingPlatform.sln -c Release --no-restore
+
+      - name: Test
+        run: dotnet test BookingPlatform.sln -c Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResults/**/*.trx
+          if-no-files-found: ignore
+
+  validate-infrastructure:
+    name: Validate Bicep and policies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Bicep CLI
+        run: |
+          curl -sSL -o bicep https://github.com/Azure/bicep/releases/latest/download/bicep-linux-x64
+          chmod +x bicep
+          sudo mv bicep /usr/local/bin/bicep
+          bicep --version
+
+      - name: Compile the templates
+        # Warnings are errors here on purpose: a nullable module output or an
+        # unused parameter is exactly the kind of thing that only surfaces at
+        # deployment time otherwise.
+        run: bicep build infra/main.bicep --outfile /tmp/main.json
+
+      - name: Lint every module
+        run: |
+          set -euo pipefail
+          for module in infra/modules/*.bicep; do
+            echo "--- $module"
+            bicep build "$module" --stdout > /dev/null
+          done
+
+      - name: Check every APIM policy is well-formed XML
+        run: |
+          python - <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          from pathlib import Path
+          failures = []
+          files = sorted(Path('apim').rglob('*.xml'))
+          for path in files:
+              try:
+                  ET.parse(path)
+              except ET.ParseError as exc:
+                  failures.append(f"{path}: {exc}")
+          print(f"checked {len(files)} policy files")
+          if failures:
+              print("\n".join(failures))
+              sys.exit(1)
+          PY
+
+      - name: Check the OpenAPI document and the product definitions
+        run: |
+          python -m pip install --quiet pyyaml
+          python - <<'PY'
+          import json, sys, yaml
+          from pathlib import Path
+
+          spec = yaml.safe_load(Path('apim/openapi/booking-api.yaml').read_text(encoding='utf-8'))
+          paths = list(spec['paths'])
+          print('paths:', paths)
+          for required in ('/bookings', '/bookings/{bookingId}', '/health'):
+              if required not in paths:
+                  sys.exit(f'OpenAPI document is missing {required}')
+
+          # Every operation policy file is named after an operationId; a typo
+          # would silently apply nothing at all.
+          operation_ids = {
+              operation['operationId']
+              for path in spec['paths'].values()
+              for operation in path.values()
+              if isinstance(operation, dict) and 'operationId' in operation
+          }
+          for policy in Path('apim/policies/operations').glob('*.xml'):
+              if policy.stem not in operation_ids:
+                  sys.exit(f'{policy} does not match any operationId: {sorted(operation_ids)}')
+
+          products = json.loads(Path('apim/products/products.json').read_text(encoding='utf-8'))['products']
+          for product in products:
+              policy = Path('apim/products') / product['policyFile']
+              if not policy.exists():
+                  sys.exit(f"{product['name']} references a missing policy file: {policy}")
+          print(f'{len(products)} product(s) and {len(operation_ids)} operation(s) check out')
+          PY
+
+  validate-scripts:
+    name: Validate scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Byte-compile the Python automation
+        run: |
+          python -m pip install --quiet -r scripts/requirements.txt
+          python -m compileall -q scripts
+
+      - name: Parse the PowerShell scripts
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem scripts/*.ps1 | ForEach-Object {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errors) | Out-Null
+            if ($errors.Count) {
+              $failed = $true
+              Write-Host "FAIL $($_.Name)"
+              $errors | ForEach-Object { Write-Host "  line $($_.Extent.StartLineNumber): $($_.Message)" }
+            } else {
+              Write-Host "OK   $($_.Name)"
+            }
+          }
+          if ($failed) { exit 1 }
+
+      - name: Analyse the PowerShell scripts
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -ErrorAction Stop
+          $results = Invoke-ScriptAnalyzer -Path scripts -Recurse -Severity Error, Warning `
+            -ExcludeRule PSAvoidUsingWriteHost   # these scripts are interactive by design
+          if ($results) {
+            $results | Format-Table -AutoSize | Out-String | Write-Host
+            if ($results | Where-Object Severity -eq 'Error') { exit 1 }
+          } else {
+            Write-Host 'PSScriptAnalyzer found nothing.'
+          }
+
+  secret-hygiene:
+    name: No secrets committed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reject tracked configuration that should be local only
+        run: |
+          set -euo pipefail
+          if git ls-files | grep -E '(appsettings\.(Production|Local)\.json|main\.parameters\.json)$'; then
+            echo "A local-only configuration file is tracked. Only the .example files belong in git." >&2
+            exit 1
+          fi
+          echo "no local configuration tracked"
+
+      - name: Reject Service Bus and storage connection strings
+        run: |
+          set -euo pipefail
+          # Every service here is reached by managed identity, so a connection
+          # string in the tree is a defect regardless of whether it is live.
+          if git grep -nIE 'SharedAccessKey=|AccountKey=|DefaultEndpointsProtocol=' -- \
+               ':!*.md' ':!.github/workflows/*'; then
+            echo "A connection string was found. Access is by managed identity; there should be none." >&2
+            exit 1
+          fi
+          echo "no connection strings found"
+
+      - name: Reject hard-coded tenant, subscription and client ids
+        run: |
+          python - <<'PY'
+          import re, sys
+          from pathlib import Path
+
+          # Azure built-in role definition ids are GUIDs and are meant to be
+          # literal: they are the same in every tenant and are documented by
+          # Microsoft. Everything else GUID-shaped in infra/ or scripts/ is a
+          # tenant, subscription, client or object id that belongs in a parameter.
+          ALLOWED = {
+              "69a216fc-b8fb-44d8-bc22-1f3c2cd27a39",  # Azure Service Bus Data Sender
+              "4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0",  # Azure Service Bus Data Receiver
+              "4633458b-17de-408a-b874-0445c86b69e6",  # Key Vault Secrets User
+          }
+          GUID = re.compile("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+          offenders = []
+          for directory in ("infra", "scripts"):
+              for path in Path(directory).rglob("*"):
+                  if not path.is_file() or path.suffix in (".md",):
+                      continue
+                  for number, line in enumerate(path.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
+                      for guid in GUID.findall(line):
+                          if guid.lower() not in ALLOWED:
+                              offenders.append(f"{path}:{number}: {guid}")
+
+          if offenders:
+              print("Hard-coded identifiers found. Tenant, subscription and client ids")
+              print("belong in a parameters file or an APIM named value:")
+              for offender in offenders:
+                  print("  " + offender)
+              sys.exit(1)
+          print("no hard-coded identifiers found")
+          PY
