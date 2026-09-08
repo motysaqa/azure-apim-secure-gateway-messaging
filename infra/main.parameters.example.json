@@ -1,0 +1,39 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "namePrefix": {
+      "value": "bookingdemo"
+    },
+    "location": {
+      "value": "westeurope"
+    },
+    "environment": {
+      "value": "dev"
+    },
+    "appServicePlanSku": {
+      "value": "B1"
+    },
+    "serviceBusSku": {
+      "value": "Basic"
+    },
+    "apimSku": {
+      "value": "Consumption"
+    },
+    "apimPublisherEmail": {
+      "value": "REPLACE_ME@example.com"
+    },
+    "apimPublisherName": {
+      "value": "Booking Platform"
+    },
+    "entraTenantId": {
+      "value": ""
+    },
+    "entraApiApplicationId": {
+      "value": ""
+    },
+    "deployMonitoring": {
+      "value": false
+    }
+  }
+}
