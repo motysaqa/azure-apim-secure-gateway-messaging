@@ -75,6 +75,38 @@ Both were found by checks written for this repository, on their first run:
    literal. Rewritten with an allowlist of those three ids, so a real tenant or
    client id committed by accident is still caught.
 
+### PSScriptAnalyzer rejected the backend key generator
+
+**Where:** the CI `validate-scripts` job, on its first real run.
+
+```
+PSAvoidUsingConvertToSecureStringWithPlainText  Error  Deploy-Infrastructure.ps1  114
+```
+
+**Cause:** the key was generated with
+`[Convert]::ToBase64String($bytes) | ConvertTo-SecureString -AsPlainText -Force`.
+The conversion needs the secret to exist as an immutable managed `String` first.
+That string cannot be cleared and lingers in memory until it is collected, which
+defeats most of the point of a `SecureString`.
+
+**Fix:** encode straight into a char array and build the `SecureString` from it,
+then clear both buffers:
+
+```powershell
+$chars = [char[]]::new([int][Math]::Ceiling($bytes.Length / 3.0) * 4)
+$written = [Convert]::ToBase64CharArray($bytes, 0, $bytes.Length, $chars, 0)
+
+$secure = [System.Security.SecureString]::new()
+for ($index = 0; $index -lt $written; $index++) { $secure.AppendChar($chars[$index]) }
+$secure.MakeReadOnly()
+
+[Array]::Clear($chars, 0, $chars.Length)
+[Array]::Clear($bytes, 0, $bytes.Length)
+```
+
+Worth noting as a process point rather than only a code one: a linter in CI found
+a security defect that reviewing the script by eye did not.
+
 ### Verified by running it
 
 - `dotnet test`: **29 tests pass** - 19 API integration tests through
