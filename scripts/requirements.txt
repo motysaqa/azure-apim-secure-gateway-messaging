@@ -1,0 +1,2 @@
+# Dependencies for scripts/reconcile_bookings.py
+requests==2.32.3
