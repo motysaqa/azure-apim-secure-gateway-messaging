@@ -1,0 +1,19 @@
+# Normalise to LF in the repository. Shell scripts must stay LF or a Linux CI
+# runner rejects them after a checkout on Windows.
+* text=auto eol=lf
+
+*.sh    text eol=lf
+*.py    text eol=lf
+*.cs    text eol=lf
+*.bicep text eol=lf
+*.xml   text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.json  text eol=lf
+
+# PowerShell keeps CRLF: some older hosts and signing tools still expect it.
+*.ps1   text eol=crlf
+*.psm1  text eol=crlf
+
+*.png   binary
+*.jpg   binary

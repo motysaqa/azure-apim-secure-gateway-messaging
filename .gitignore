@@ -1,0 +1,51 @@
+# Build output
+bin/
+obj/
+publish/
+*.user
+*.suo
+.vs/
+
+# Local databases (SQLite stands in for SQL Server; never commit one)
+*.db
+*.db-wal
+*.db-shm
+
+# Real configuration -- only the .example.* files belong in git
+appsettings.Production.json
+appsettings.Local.json
+infra/main.parameters.json
+infra/*.parameters.json
+!infra/main.parameters.example.json
+*.parameters.local.json
+
+# Secrets and credentials -- belt and braces; nothing here should ever exist
+.env
+*.pfx
+*.pem
+*.key
+azureauth.json
+*.publishsettings
+
+# Compiled ARM output from `bicep build`
+infra/**/*.json
+!infra/main.parameters.example.json
+
+# Python
+__pycache__/
+.venv/
+venv/
+*.pyc
+
+# Test and coverage output
+TestResults/
+coverage/
+*.trx
+*.coverage
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
