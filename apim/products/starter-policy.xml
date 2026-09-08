@@ -1,0 +1,44 @@
+<!--
+    Product policy: Booking API - Starter.
+
+    Product policies run before the API policy, so this is where a tier's limits
+    belong. The API policy's 600/minute is the ceiling for everything; this brings
+    Starter down to 20.
+
+    Keyed on the subscription rather than the IP: partners behind a NAT would
+    otherwise share a bucket, and a partner that scales out would appear as many
+    callers instead of one.
+-->
+<policies>
+    <inbound>
+        <base />
+
+        <rate-limit-by-key calls="20"
+                           renewal-period="60"
+                           counter-key="@(context.Subscription.Id)"
+                           remaining-calls-header-name="X-RateLimit-Remaining"
+                           total-calls-header-name="X-RateLimit-Limit"
+                           retry-after-header-name="Retry-After" />
+
+        <!-- 5,000 a day. Evaluation traffic, not production traffic. -->
+        <quota-by-key calls="5000"
+                      renewal-period="86400"
+                      counter-key="@(context.Subscription.Id)" />
+
+        <set-header name="X-Product-Tier" exists-action="override">
+            <value>starter</value>
+        </set-header>
+    </inbound>
+
+    <backend>
+        <base />
+    </backend>
+
+    <outbound>
+        <base />
+    </outbound>
+
+    <on-error>
+        <base />
+    </on-error>
+</policies>

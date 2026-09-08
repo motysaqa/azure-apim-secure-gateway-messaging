@@ -1,0 +1,29 @@
+{
+  "$comment": "Product definitions applied by scripts/Import-ApimApi.ps1. The products themselves are created by infra/modules/apim.bicep; this file carries the parts that belong with the policies rather than with the infrastructure - the descriptions a partner reads and which policy file goes with which product.",
+  "products": [
+    {
+      "name": "booking-starter",
+      "displayName": "Booking API - Starter",
+      "description": "Evaluation access to the Booking API. 20 requests per minute and 5,000 per day, approved automatically. Intended for integration work against non-production data.",
+      "subscriptionRequired": true,
+      "approvalRequired": false,
+      "subscriptionsLimit": 100,
+      "state": "published",
+      "policyFile": "starter-policy.xml",
+      "terms": "Evaluation use only. Limits may change without notice. No availability commitment.",
+      "apis": ["booking-api"]
+    },
+    {
+      "name": "booking-premium",
+      "displayName": "Booking API - Premium",
+      "description": "Production access to the Booking API. 600 requests per minute with a 40-per-5-seconds burst allowance, and 500,000 per day. Requests are approved manually.",
+      "subscriptionRequired": true,
+      "approvalRequired": true,
+      "subscriptionsLimit": 25,
+      "state": "published",
+      "policyFile": "premium-policy.xml",
+      "terms": "Production use. Subject to the integration agreement. 99.9% monthly availability target.",
+      "apis": ["booking-api"]
+    }
+  ]
+}

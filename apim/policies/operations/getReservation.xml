@@ -1,0 +1,36 @@
+<!--
+    Operation policy for GET /reservations/{bookingId}.
+
+    "Reservation" is the term the partner-facing contract uses; the backend calls
+    it a booking. Rewriting the path at the gateway means the published vocabulary
+    is not hostage to an internal route name, and renaming the backend route later
+    changes this file rather than every partner's integration.
+
+    Nested double quotes cannot appear inside an XML attribute, so the C#
+    expression uses &quot; entities. This is the single most common reason a
+    hand-written APIM policy fails to save.
+-->
+<policies>
+    <inbound>
+        <base />
+
+        <rewrite-uri template="@(&quot;/bookings/&quot; + context.Request.MatchedParameters[&quot;bookingId&quot;])"
+                     copy-unmatched-params="true" />
+
+        <set-header name="X-Rewritten-From" exists-action="override">
+            <value>@(context.Request.OriginalUrl.Path)</value>
+        </set-header>
+    </inbound>
+
+    <backend>
+        <base />
+    </backend>
+
+    <outbound>
+        <base />
+    </outbound>
+
+    <on-error>
+        <base />
+    </on-error>
+</policies>

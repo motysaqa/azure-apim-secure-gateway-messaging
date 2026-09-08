@@ -1,0 +1,315 @@
+openapi: 3.0.3
+info:
+  title: Booking API
+  version: "1.0.0"
+  description: |
+    Booking creation and retrieval for property reservations.
+
+    Accepting a booking is synchronous; confirming it is not. `POST /bookings`
+    returns `201` with status `PENDING` as soon as the booking and its outbox
+    message are committed. A background publisher hands the message to Service
+    Bus, a worker processes it, and the status becomes `CONFIRMED`. Poll
+    `GET /bookings/{bookingId}` or `GET /reservations/{bookingId}` for the change.
+
+    **Retries.** Send an `Idempotency-Key` header on every `POST`. A repeated key
+    returns the original booking with `200` and `Idempotency-Replayed: true`
+    rather than creating a second one.
+
+    **Authentication.** An Entra ID bearer token plus a subscription key. Both are
+    enforced by the gateway; the origin is not reachable directly.
+  contact:
+    name: Booking Platform integrations
+    email: integrations@example.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: https://apim-booking-dev.azure-api.net/booking/v1
+    description: API Management gateway (placeholder host)
+  - url: http://localhost:5080
+    description: Local development, no gateway in front
+
+security:
+  - entraId: []
+    subscriptionKey: []
+
+tags:
+  - name: bookings
+    description: Create and retrieve bookings.
+  - name: operations
+    description: Probes. Not part of the partner contract.
+
+paths:
+  /bookings:
+    post:
+      tags: [bookings]
+      operationId: createBooking
+      summary: Create a booking
+      description: |
+        Accepts a booking and returns immediately with status `PENDING`. The
+        booking row and its outbox message are written in one transaction, so a
+        `201` means the message will be delivered even if Service Bus is
+        unavailable at that moment.
+      parameters:
+        - $ref: "#/components/parameters/CorrelationId"
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: |
+            Client-generated key identifying this booking intent. Repeating a key
+            returns the original booking instead of creating another. Strongly
+            recommended: without it, a network timeout on a successful request is
+            indistinguishable from a failure.
+          schema:
+            type: string
+            maxLength: 128
+            example: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBookingRequest"
+            example:
+              propertyId: PROP-1001
+              guestEmail: guest@example.com
+              checkIn: "2026-06-01"
+              checkOut: "2026-06-05"
+              guests: 2
+              totalAmount: 592.40
+              currency: EUR
+      responses:
+        "201":
+          description: Booking accepted
+          headers:
+            Location:
+              schema: { type: string }
+            X-Correlation-ID:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Booking" }
+        "200":
+          description: |
+            The `Idempotency-Key` had already been used. The original booking is
+            returned unchanged and nothing was created.
+          headers:
+            Idempotency-Replayed:
+              schema: { type: string, enum: ["true"] }
+            X-Correlation-ID:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Booking" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /bookings/{bookingId}:
+    get:
+      tags: [bookings]
+      operationId: getBooking
+      summary: Retrieve a booking
+      description: |
+        Cached for 30 seconds at the gateway. `PENDING` becomes `CONFIRMED` once
+        the worker has processed the booking's message.
+      parameters:
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/BookingId"
+      responses:
+        "200":
+          description: The booking
+          headers:
+            X-Cache-Lookup:
+              description: HIT when served from the gateway cache.
+              schema: { type: string, enum: [HIT, MISS] }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Booking" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /reservations/{bookingId}:
+    get:
+      tags: [bookings]
+      operationId: getReservation
+      summary: Retrieve a booking (partner vocabulary)
+      description: |
+        Identical to `GET /bookings/{bookingId}`. Partner contracts say
+        "reservation"; the gateway rewrites the path so the internal route name
+        is not part of the published contract.
+      parameters:
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/BookingId"
+      responses:
+        "200":
+          description: The booking
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Booking" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /health:
+    get:
+      tags: [operations]
+      operationId: health
+      summary: Liveness probe
+      security: []
+      responses:
+        "200":
+          description: The app is running
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: healthy }
+
+  /health/ready:
+    get:
+      tags: [operations]
+      operationId: readiness
+      summary: Readiness probe
+      description: |
+        Reports the outbox depth. A `pending` count that keeps climbing is the
+        first symptom of a broken managed identity or a deleted queue, and is the
+        right thing to alert on.
+      security: []
+      responses:
+        "200":
+          description: Readiness detail
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ready }
+                  outbox:
+                    type: object
+                    properties:
+                      total: { type: integer }
+                      pending: { type: integer }
+                  destination: { type: string }
+
+components:
+  securitySchemes:
+    entraId:
+      type: oauth2
+      description: Entra ID client-credentials token. Validated by the gateway.
+      flows:
+        clientCredentials:
+          tokenUrl: https://login.microsoftonline.com/{tenantId}/oauth2/v2.0/token
+          scopes:
+            "api://{applicationId}/.default": Full access to the Booking API
+    subscriptionKey:
+      type: apiKey
+      in: header
+      name: Ocp-Apim-Subscription-Key
+      description: Product subscription key issued by API Management.
+
+  parameters:
+    CorrelationId:
+      name: X-Correlation-ID
+      in: header
+      required: false
+      description: Supplied by the caller or generated by the gateway; echoed on every response.
+      schema: { type: string }
+    BookingId:
+      name: bookingId
+      in: path
+      required: true
+      schema: { type: string, example: BK-3F9A2B7C1D4E5061 }
+
+  schemas:
+    CreateBookingRequest:
+      type: object
+      required: [propertyId, guestEmail, checkIn, checkOut, guests, totalAmount, currency]
+      properties:
+        propertyId: { type: string, example: PROP-1001 }
+        guestEmail: { type: string, format: email }
+        checkIn: { type: string, format: date, description: "Not in the past." }
+        checkOut: { type: string, format: date, description: "At least one day after checkIn, at most 30 nights." }
+        guests: { type: integer, minimum: 1, maximum: 20 }
+        totalAmount: { type: number, format: double, minimum: 0, example: 592.40 }
+        currency: { type: string, enum: [EUR, USD, GBP, AED, SAR] }
+
+    Booking:
+      type: object
+      required: [bookingId, propertyId, guestEmail, checkIn, checkOut, nights, guests, totalAmount, currency, status, createdAt, correlationId]
+      properties:
+        bookingId: { type: string, example: BK-3F9A2B7C1D4E5061 }
+        propertyId: { type: string }
+        guestEmail: { type: string, format: email }
+        checkIn: { type: string, format: date }
+        checkOut: { type: string, format: date }
+        nights: { type: integer }
+        guests: { type: integer }
+        totalAmount: { type: number, format: double }
+        currency: { type: string }
+        status:
+          type: string
+          enum: [PENDING, CONFIRMED]
+          description: |
+            `PENDING` until the outbox message has been published; `CONFIRMED`
+            afterwards. It is not a business state - a booking is accepted either
+            way - it reports whether downstream processing has been handed off.
+        createdAt: { type: string, format: date-time }
+        correlationId: { type: string }
+
+    Problem:
+      type: object
+      description: RFC 7807 problem detail. The gateway returns the same shape for the errors it generates.
+      required: [type, title, status, detail, correlationId]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        correlationId: { type: string }
+        errors:
+          type: object
+          description: Field name to messages, present only on validation failures.
+          additionalProperties:
+            type: array
+            items: { type: string }
+
+  responses:
+    BadRequest:
+      description: The request failed validation
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+          example:
+            type: https://httpstatuses.io/400
+            title: Invalid booking request
+            status: 400
+            detail: One or more fields failed validation.
+            correlationId: 8f1c0b2e-0d1a-4f2b-9d55-2f6a1f0c9e77
+            errors:
+              checkOut: ["checkOut must be at least one day after checkIn."]
+    Unauthorized:
+      description: No valid token, or no valid subscription key
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    NotFound:
+      description: No such booking
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    TooManyRequests:
+      description: |
+        The product's rate limit or daily quota was exceeded. `Retry-After` says
+        when to try again; `X-RateLimit-Remaining` lets a caller back off before
+        reaching this.
+      headers:
+        Retry-After:
+          schema: { type: integer }
+        X-RateLimit-Remaining:
+          schema: { type: integer }
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }

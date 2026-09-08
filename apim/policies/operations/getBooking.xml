@@ -1,0 +1,54 @@
+<!--
+    Operation policy for GET /bookings/{bookingId}.
+
+    Response caching, which is the one thing worth caching in this API: a booking
+    is immutable in practice once confirmed, and a channel partner polls the same
+    id repeatedly while it waits for CONFIRMED.
+
+    IMPORTANT - tier limitation. The APIM **Consumption** tier has no built-in
+    cache. `caching-type="internal"` is silently a no-op there. The value below is
+    `prefer-external`, so the policy uses an attached Azure Cache for Redis when
+    one exists and falls through harmlessly when it does not. On Developer,
+    Basic, Standard or Premium the internal cache works with no extra resource.
+    docs/cost.md has the price of the smallest usable Redis.
+-->
+<policies>
+    <inbound>
+        <base />
+
+        <cache-lookup vary-by-developer="true"
+                      vary-by-developer-groups="false"
+                      downstream-caching-type="none"
+                      must-revalidate="true"
+                      caching-type="prefer-external">
+            <!-- Varying by subscription as well as by URL: two partners must never
+                 be served each other's cached response. -->
+            <vary-by-header>Accept</vary-by-header>
+            <vary-by-header>Accept-Charset</vary-by-header>
+        </cache-lookup>
+    </inbound>
+
+    <backend>
+        <base />
+    </backend>
+
+    <outbound>
+        <base />
+
+        <!--
+            30 seconds. Long enough to absorb a polling loop, short enough that a
+            PENDING booking flipping to CONFIRMED is visible almost immediately.
+            Only 200s are stored: caching a 404 would hide a booking that has just
+            been created.
+        -->
+        <cache-store duration="30" cache-response="@(context.Response.StatusCode == 200)" />
+
+        <set-header name="X-Cache-Lookup" exists-action="override">
+            <value>@(context.Variables.ContainsKey("cache-hit") ? "HIT" : "MISS")</value>
+        </set-header>
+    </outbound>
+
+    <on-error>
+        <base />
+    </on-error>
+</policies>

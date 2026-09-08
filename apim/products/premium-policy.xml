@@ -1,0 +1,45 @@
+<!--
+    Product policy: Booking API - Premium.
+
+    Same shape as Starter with production limits, plus a burst allowance: real
+    channel managers synchronise in bursts after a rate update, and a flat
+    per-minute limit rejects legitimate traffic that a short window would absorb.
+-->
+<policies>
+    <inbound>
+        <base />
+
+        <rate-limit-by-key calls="600"
+                           renewal-period="60"
+                           counter-key="@(context.Subscription.Id)"
+                           remaining-calls-header-name="X-RateLimit-Remaining"
+                           total-calls-header-name="X-RateLimit-Limit"
+                           retry-after-header-name="Retry-After" />
+
+        <!-- A short second window: up to 40 calls in any 5 seconds, so a burst is
+             allowed but a sustained flood is not. -->
+        <rate-limit-by-key calls="40"
+                           renewal-period="5"
+                           counter-key="@(context.Subscription.Id)" />
+
+        <quota-by-key calls="500000"
+                      renewal-period="86400"
+                      counter-key="@(context.Subscription.Id)" />
+
+        <set-header name="X-Product-Tier" exists-action="override">
+            <value>premium</value>
+        </set-header>
+    </inbound>
+
+    <backend>
+        <base />
+    </backend>
+
+    <outbound>
+        <base />
+    </outbound>
+
+    <on-error>
+        <base />
+    </on-error>
+</policies>
